@@ -24,17 +24,21 @@ local MouselookStart, MouselookStop = _G.MouselookStart, _G.MouselookStop
 
 local modName = "MouselookHandler"
 
-local customFunction, stateHandler, customEventFrame
+local customFunction, customEventFrame
+local refreshClauseText
+local db
+local databaseDefaults
+local shouldMouselook = false
+local turnOrActionActive, cameraOrSelectOrMoveActive = false, false
+local clauseText = nil
+local enabled, inverted = false, false
+
 function MouselookHandler:predFun()
   return false
 end
 
-turnOrActionActive, cameraOrSelectOrMoveActive = false, false
-clauseText = nil
-
-enabled, inverted = false, false
-
 local function defer()
+  if not db or not db.profile then return end
   if not db.profile.useDeferWorkaround then return end
   for i = 1, 5 do
     if _G.IsMouseButtonDown(i) then return true end
@@ -44,6 +48,7 @@ end
 -- Starts and stops mouselook if the API function IsMouselooking() doesn't match up with this mods
 -- saved state.
 local function rematch()
+  if not db or not db.profile then return end
   if defer() then return end
 
   if turnOrActionActive or cameraOrSelectOrMoveActive then return end
@@ -63,7 +68,8 @@ local function rematch()
   end
 end
 
-function update(event, ...)
+local function update(event, ...)
+  if not db or not db.profile then return end
   local shouldMouselookOld = shouldMouselook
   shouldMouselook = MouselookHandler:predFun(enabled, inverted, clauseText, event, ...)
   if shouldMouselook ~= shouldMouselookOld then
@@ -71,30 +77,37 @@ function update(event, ...)
   end
 end
 
-function invert()
+local function invert()
   inverted = true
   update()
 end
 
-function revert()
+local function revert()
   inverted = false
   update()
 end
 
-function toggle()
+local function toggle()
   enabled = not enabled
   update()
 end
 
-function lock()
+local function lock()
   enabled = true
   update()
 end
 
-function unlock()
+local function unlock()
   enabled = false
   update()
 end
+
+MouselookHandler.update = update
+MouselookHandler.invert = invert
+MouselookHandler.revert = revert
+MouselookHandler.toggle = toggle
+MouselookHandler.lock = lock
+MouselookHandler.unlock = unlock
 
 local handlerFrame = _G.CreateFrame("Frame", modName .. "handlerFrame")
 
@@ -104,7 +117,9 @@ handlerFrame:SetScript("OnEvent", function(self, event, ...)
 end)
 
 function handlerFrame:onUpdate(...)
-  rematch()
+  if not refreshClauseText() then
+    rematch()
+  end
   --_G.assert(_G.GetBindingAction("BUTTON1", true))
   --_G.print(_G.GetMouseFocus():GetName())
   --_G.print(_G.IsMouseButtonDown(1), _G.IsMouseButtonDown(2))
@@ -248,12 +263,31 @@ local function getCustomFunction(info)
 end
 
 local function setMacroText(info, input)
-  _G.RegisterStateDriver(stateHandler, "mouselookstate", input)
   db.profile.macroText = input
+  refreshClauseText()
 end
 
 local function getMacroText(info)
   return db.profile.macroText
+end
+
+refreshClauseText = function()
+  local macroText = db and db.profile and db.profile.macroText
+  local newClauseText
+  if macroText and macroText ~= "" then
+    newClauseText = _G.SecureCmdOptionParse(macroText)
+    if newClauseText == "" then
+      newClauseText = nil
+    end
+  end
+
+  if newClauseText ~= clauseText then
+    clauseText = newClauseText
+    update("MOUSELOOKHANDLER_CLAUSETEXT_CHANGED")
+    return true
+  end
+
+  return false
 end
 
 local function setEventList(info, input)
@@ -799,6 +833,7 @@ end
 function MouselookHandler:OnInitialize()
   -- The ".toc" need say "## SavedVariables: MouselookHandlerDB".
   self.db = LibStub("AceDB-3.0"):New("MouselookHandlerDB", databaseDefaults, true)
+  db = self.db
 
   local currentVersion = _G.C_AddOns.GetAddOnMetadata(modName, "Version")
   if not self.db.global.version then
@@ -862,21 +897,10 @@ function MouselookHandler:OnInitialize()
     self.db:ResetProfile()
   end
 
-  --------------------------------------------------------------------------------------------------
-  stateHandler = _G.CreateFrame("Frame", modName .. "stateHandler", UIParent,
-    "SecureHandlerStateTemplate")
-  function stateHandler:onMouselookState(newstate)
-    _G["MouselookHandler"]["clauseText"] = newstate
-    _G["MouselookHandler"].update()
-  end
-  stateHandler:SetAttribute("_onstate-mouselookstate", [[
-    self:CallMethod("onMouselookState", newstate)
-  ]])
-  _G.RegisterStateDriver(stateHandler, "mouselookstate", db.profile.macroText)
   ------------------------------------------------------------------------------
   customEventFrame = _G.CreateFrame("Frame", modName .. "customEventFrame")
   customEventFrame:SetScript("OnEvent", function(self, event, ...)
-    _G["MouselookHandler"].update(event, ...)
+    update(event, ...)
   end)
   for event in _G.string.gmatch(db.profile.eventList, "[^%s]+") do
     customEventFrame:RegisterEvent(event)
@@ -903,6 +927,7 @@ end
 
 function MouselookHandler:RefreshDB()
     --MouselookHandler:Print("Refreshing DB Profile")
+  db = self.db
     applyOverrideBindings()
 end
 
