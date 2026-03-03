@@ -4,15 +4,15 @@ _G["BINDING_NAME_TOGGLEMOUSELOOK"]    = "Toggle Mouselook"
 _G["BINDING_NAME_LOCKMOUSELOOK"]      = "Enable Mouselook"
 _G["BINDING_NAME_UNLOCKMOUSELOOK"]    = "Disable Mouselook"
 
-MouselookHandler = LibStub("AceAddon-3.0"):NewAddon("MouselookHandler", "AceConsole-3.0")
+local LibStub = _G.LibStub
+local MouselookHandler = LibStub("AceAddon-3.0"):NewAddon("MouselookHandler", "AceConsole-3.0")
+_G.MouselookHandler = MouselookHandler
 MouselookHandler._G = _G
 
--- Set the environment of the current function to the global table MouselookHandler.
--- See: http://www.lua.org/pil/14.3.html
-setfenv(1, MouselookHandler)
-
-local MouselookHandler = _G.MouselookHandler
-local LibStub = _G.LibStub
+local customFunctionEnvironment = _G.setmetatable({
+  MouselookHandler = MouselookHandler,
+  _G = _G,
+}, { __index = _G })
 
 local AceConfig = LibStub("AceConfig-3.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
@@ -28,13 +28,21 @@ local customFunction, customEventFrame
 local refreshClauseText
 local db
 local databaseDefaults
+local DEFAULT_CUSTOM_FUNCTION
 local shouldMouselook = false
 local turnOrActionActive, cameraOrSelectOrMoveActive = false, false
 local clauseText = nil
 local enabled, inverted = false, false
 
+local function taintDebugLog(message)
+  if not db or not db.profile or not db.profile.debugTaint then return end
+
+  MouselookHandler:Print("[taint-debug] " .. tostring(message))
+end
+
 function MouselookHandler:predFun()
-  return false
+  return (enabled and not inverted) or
+    (not enabled and inverted)
 end
 
 local function defer()
@@ -54,15 +62,18 @@ local function rematch()
   if turnOrActionActive or cameraOrSelectOrMoveActive then return end
 
   if db.profile.useSpellTargetingOverride and _G.SpellIsTargeting() then
+    taintDebugLog("MouselookStop (spell targeting override active)")
     MouselookStop(); return
   end
 
   if not IsMouselooking() then
     if shouldMouselook and not _G.GetCurrentKeyBoardFocus() then
+      taintDebugLog("MouselookStart (should=true, keyboardFocus=false)")
       MouselookStart()
     end
   elseif IsMouselooking() then
     if not shouldMouselook or _G.GetCurrentKeyBoardFocus() then
+      taintDebugLog("MouselookStop (should=false or keyboardFocus=true)")
       MouselookStop()
     end
   end
@@ -79,26 +90,31 @@ end
 
 local function invert()
   inverted = true
+  taintDebugLog("invert() -> inverted=true")
   update()
 end
 
 local function revert()
   inverted = false
+  taintDebugLog("revert() -> inverted=false")
   update()
 end
 
 local function toggle()
   enabled = not enabled
+  taintDebugLog("toggle() -> enabled=" .. tostring(enabled))
   update()
 end
 
 local function lock()
   enabled = true
+  taintDebugLog("lock() -> enabled=true")
   update()
 end
 
 local function unlock()
   enabled = false
+  taintDebugLog("unlock() -> enabled=false")
   update()
 end
 
@@ -207,10 +223,12 @@ handlerFrame:RegisterEvent("ADDON_LOADED")
 local function applyOverrideBindings(info, val)
   if db.profile.useOverrideBindings then
     for key, command in _G.pairs(db.profile.mouseOverrideBindings) do
+      taintDebugLog("SetMouselookOverrideBinding(" .. tostring(key) .. ", " .. tostring(command == "" and nil or command) .. ")")
       _G.SetMouselookOverrideBinding(key, command == "" and nil or command)
     end
   else
     for key, _ in _G.pairs(db.profile.mouseOverrideBindings) do
+      taintDebugLog("SetMouselookOverrideBinding(" .. tostring(key) .. ", nil)")
       _G.SetMouselookOverrideBinding(key, nil)
     end
   end
@@ -218,6 +236,7 @@ end
 
 local function setUseOverrideBindings(info, val)
   db.profile.useOverrideBindings = val
+  taintDebugLog("useOverrideBindings=" .. tostring(val))
   applyOverrideBindings()
 end
 
@@ -238,24 +257,59 @@ end
 -- configured.
 local selectedKey
 
+local function applyCustomFunction(input)
+  if input == DEFAULT_CUSTOM_FUNCTION then
+    return true
+  end
+
+  local chunk, errorMessage = _G.loadstring(input)
+  if not chunk then
+    return errorMessage
+  end
+
+  if _G.setfenv then
+    _G.setfenv(chunk, customFunctionEnvironment)
+  end
+
+  local ok, runtimeError = _G.pcall(chunk)
+  if not ok then
+    return runtimeError
+  end
+
+  if _G.type(MouselookHandler.predFun) ~= "function" then
+    return "Your Lua code should define a function \'MouselookHandler:predFun\'!"
+  end
+
+  return true
+end
+
 local function validateCustomFunction(info, input)
+  if input == DEFAULT_CUSTOM_FUNCTION then
+    return true
+  end
+
   local chunk, errorMessage = _G.loadstring(input)
   if not chunk then
     MouselookHandler:Print(errorMessage)
     return errorMessage
-  else
-    chunk()
-    if _G.type(predFun) ~= "function" then
-      MouselookHandler:Print("Your Lua code should define a function \'MouselookHandler:predFun\'!")
-      return "Your Lua code should define a function \'MouselookHandler:predFun\'!"
-    else
-      return true
-    end
   end
+
+  if not _G.string.find(input, "function%s+MouselookHandler:predFun%s*%(") then
+    local message = "Your Lua code should define a function \'MouselookHandler:predFun\'!"
+    MouselookHandler:Print(message)
+    return message
+  end
+
+  return true
 end
 
 local function setCustomFunction(info, input)
   db.profile.customFunction = input
+
+  local result = applyCustomFunction(input)
+  if result ~= true then
+    MouselookHandler:Print(result)
+  end
 end
 
 local function getCustomFunction(info)
@@ -264,6 +318,7 @@ end
 
 local function setMacroText(info, input)
   db.profile.macroText = input
+  taintDebugLog("macroText updated")
   refreshClauseText()
 end
 
@@ -291,6 +346,7 @@ refreshClauseText = function()
 end
 
 local function setEventList(info, input)
+  taintDebugLog("eventList updated to: " .. tostring(input))
   for event in _G.string.gmatch(db.profile.eventList, "[^%s]+") do
     customEventFrame:UnregisterEvent(event)
   end
@@ -369,9 +425,34 @@ local options = {
           type = "toggle",
           name = "Enable",
           width = "full",
-          set = function(info, val) db.profile.useSpellTargetingOverride = val end,
+          set = function(info, val)
+            db.profile.useSpellTargetingOverride = val
+            taintDebugLog("useSpellTargetingOverride=" .. tostring(val))
+          end,
           get = function(info) return db.profile.useSpellTargetingOverride end,
           order = 8,
+        },
+        taintDebugHeader = {
+          type = "header",
+          name = "Debug taint tracing",
+          order = 9,
+        },
+        taintDebugDescription = {
+          type = "description",
+          name = "Logs mouselook state transitions and override binding writes to chat. Enable only while reproducing taint issues.",
+          fontSize = "medium",
+          order = 10,
+        },
+        taintDebugToggle = {
+          type = "toggle",
+          name = "Enable debug tracing",
+          width = "full",
+          set = function(info, val)
+            db.profile.debugTaint = val
+            taintDebugLog("debugTaint=" .. tostring(val))
+          end,
+          get = function(info) return db.profile.debugTaint end,
+          order = 11,
         },
       },
     },
@@ -787,6 +868,7 @@ databaseDefaults = {
     ["useSpellTargetingOverride"] = true,
     ["useDeferWorkaround"] = true,
     ["useOverrideBindings"] = true,
+    ["debugTaint"] = false,
     ["mouseOverrideBindings"] = {
         ["BUTTON1"] = "STRAFELEFT",
         ["BUTTON2"] = "STRAFERIGHT",
@@ -796,12 +878,14 @@ databaseDefaults = {
   },
 }
 
-databaseDefaults.profile.customFunction = [[
+DEFAULT_CUSTOM_FUNCTION = [[
 function MouselookHandler:predFun(enabled, inverted, clauseText, event, ...)
   return (enabled and not inverted) or
     (not enabled and inverted)
 end
 ]]
+
+databaseDefaults.profile.customFunction = DEFAULT_CUSTOM_FUNCTION
 
 local function migrateLegacyGlobalPreferences()
   -- None of the values of these keys in db.global are tables, so we don't need a deep copy
@@ -852,7 +936,10 @@ function MouselookHandler:OnInitialize()
   self:RefreshDB()
 
   if validateCustomFunction(nil, db.profile.customFunction) == true then
-    setCustomFunction(nil, db.profile.customFunction)
+    local result = applyCustomFunction(db.profile.customFunction)
+    if result ~= true then
+      MouselookHandler:Print(result)
+    end
   end
 
   for k, _ in _G.pairs(db.profile.mouseOverrideBindings) do
