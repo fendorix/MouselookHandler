@@ -29,8 +29,10 @@ local refreshClauseText
 local db
 local databaseDefaults
 local DEFAULT_CUSTOM_FUNCTION
+local handlerFrame
 local shouldMouselook = false
 local turnOrActionActive, cameraOrSelectOrMoveActive = false, false
+local deferredRematchPending = false
 local clauseText = nil
 local enabled, inverted = false, false
 
@@ -53,11 +55,28 @@ local function defer()
   end
 end
 
+local function shouldUseOnUpdate()
+  if not db or not db.profile then return false end
+
+  return deferredRematchPending or (db.profile.macroText and db.profile.macroText ~= "")
+end
+
+local function refreshOnUpdateRegistration()
+  handlerFrame:SetScript("OnUpdate", shouldUseOnUpdate() and handlerFrame.onUpdate or nil)
+end
+
 -- Starts and stops mouselook if the API function IsMouselooking() doesn't match up with this mods
 -- saved state.
 local function rematch()
   if not db or not db.profile then return end
-  if defer() then return end
+  if defer() then
+    deferredRematchPending = true
+    refreshOnUpdateRegistration()
+    return
+  end
+
+  deferredRematchPending = false
+  refreshOnUpdateRegistration()
 
   if turnOrActionActive or cameraOrSelectOrMoveActive then return end
 
@@ -125,7 +144,7 @@ MouselookHandler.toggle = toggle
 MouselookHandler.lock = lock
 MouselookHandler.unlock = unlock
 
-local handlerFrame = _G.CreateFrame("Frame", modName .. "handlerFrame")
+handlerFrame = _G.CreateFrame("Frame", modName .. "handlerFrame")
 
 -- http://www.wowinterface.com/forums/showthread.php?p=267998
 handlerFrame:SetScript("OnEvent", function(self, event, ...)
@@ -134,14 +153,16 @@ end)
 
 function handlerFrame:onUpdate(...)
   if not refreshClauseText() then
-    rematch()
+    if deferredRematchPending then
+      rematch()
+    end
   end
   --_G.assert(_G.GetBindingAction("BUTTON1", true))
   --_G.print(_G.GetMouseFocus():GetName())
   --_G.print(_G.IsMouseButtonDown(1), _G.IsMouseButtonDown(2))
 end
 
-handlerFrame:SetScript("OnUpdate", handlerFrame.onUpdate)
+handlerFrame:SetScript("OnUpdate", nil)
 
 _G.hooksecurefunc("TurnOrActionStart", function()
   turnOrActionActive = true
@@ -199,12 +220,12 @@ function handlerFrame:ADDON_LOADED()
   end)
 
   _G.CinematicFrameCloseDialog:HookScript("OnHide", function(self)
-    handlerFrame:SetScript("OnUpdate", handlerFrame.onUpdate)
+    refreshOnUpdateRegistration()
     rematch()
   end)
 
   _G.MovieFrame.CloseDialog:HookScript("OnHide", function(self)
-    handlerFrame:SetScript("OnUpdate", handlerFrame.onUpdate)
+    refreshOnUpdateRegistration()
     rematch()
   end)
 
@@ -319,6 +340,7 @@ end
 local function setMacroText(info, input)
   db.profile.macroText = input
   taintDebugLog("macroText updated")
+  refreshOnUpdateRegistration()
   refreshClauseText()
 end
 
@@ -1015,7 +1037,8 @@ end
 function MouselookHandler:RefreshDB()
     --MouselookHandler:Print("Refreshing DB Profile")
   db = self.db
-    applyOverrideBindings()
+  refreshOnUpdateRegistration()
+  applyOverrideBindings()
 end
 
 -- Called by AceAddon.
