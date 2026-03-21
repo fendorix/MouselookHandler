@@ -33,6 +33,7 @@ local handlerFrame
 local shouldMouselook = false
 local turnOrActionActive, cameraOrSelectOrMoveActive = false, false
 local deferredRematchPending = false
+local spellTargetingActive = false
 local clauseText = nil
 local enabled, inverted = false, false
 
@@ -58,7 +59,9 @@ end
 local function shouldUseOnUpdate()
   if not db or not db.profile then return false end
 
-  return deferredRematchPending or (db.profile.macroText and db.profile.macroText ~= "")
+  return deferredRematchPending or
+    (db.profile.macroText and db.profile.macroText ~= "") or
+    (db.profile.useSpellTargetingOverride and (_G.SpellIsTargeting() or shouldMouselook or IsMouselooking()))
 end
 
 local function refreshOnUpdateRegistration()
@@ -152,6 +155,14 @@ handlerFrame:SetScript("OnEvent", function(self, event, ...)
 end)
 
 function handlerFrame:onUpdate(...)
+  local spellTargetingNow = db and db.profile and db.profile.useSpellTargetingOverride and _G.SpellIsTargeting() or false
+  if spellTargetingNow ~= spellTargetingActive then
+    spellTargetingActive = spellTargetingNow
+    taintDebugLog("spellTargetingActive=" .. tostring(spellTargetingActive))
+    rematch()
+    return
+  end
+
   if not refreshClauseText() then
     if deferredRematchPending then
       rematch()
@@ -450,6 +461,8 @@ local options = {
           set = function(info, val)
             db.profile.useSpellTargetingOverride = val
             taintDebugLog("useSpellTargetingOverride=" .. tostring(val))
+            refreshOnUpdateRegistration()
+            rematch()
           end,
           get = function(info) return db.profile.useSpellTargetingOverride end,
           order = 8,
